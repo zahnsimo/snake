@@ -13,25 +13,28 @@ data WASD = W | A | S | D
 
 data Food = Food (Int,Int)
 
-new_snake :: Snake -> Food -> (Int,Int) -> Snake
-new_snake (Snake []) _ dir = Snake [(0,0)]
-new_snake (Snake snake) (Food food) dir | snake_bite new_head snake = Snake [] 
-                                        | bonk new_head             = Snake []
-                                        | food_eaten new_head food  = Snake (new_head : snake)
-                                        | otherwise                 = Snake (new_head : init snake)
+new_snake :: Snake -> Food -> (Int,Int) -> (Snake, Maybe Food)
+new_snake (Snake []) _ dir = (Snake [(0,0)], Nothing)
+new_snake (Snake snake) (Food food) dir | snake_bite new_head snake = (Snake [], Nothing) 
+                                        | bonk new_head             = (Snake [], Nothing)
+                                        | food_eaten new_head food  = (Snake (new_head : snake), Nothing)
+                                        | otherwise                 = (Snake (new_head : init snake), Just $ Food food)
                                where old_head = head snake
                                      new_head = (fst old_head + fst dir, snd old_head + snd dir)
                                      snake_bite h t = h `elem` t
                                      food_eaten h f = h == f
                                      bonk h = fst h < 0 || fst h > x_max || snd h < 0 || snd h > y_max
 
-spawn_food :: IO Food
-spawn_food = do
+spawn_food :: Snake -> IO Food
+spawn_food (Snake snake) = do
   rand_x <- randomIO :: IO Int
   let x = rand_x `mod` (x_max + 1)
   rand_y <- randomIO :: IO Int
   let y = rand_y `mod` (y_max + 1)
-  return (Food (x,y))
+  if (x,y) `elem` snake then
+    spawn_food (Snake snake)
+  else  
+    return (Food (x,y))
  
 wasd_to_dir :: WASD -> (Int,Int)
 wasd_to_dir s = case s of
@@ -70,21 +73,24 @@ draw snake food = traverse putStrLn $ map (\ y -> drawline snake food y) [y_max,
 main = do
   hSetBuffering stdin NoBuffering
   let starter = Snake [(5,0),(4,0),(3,0),(2,0)]
-  food <- spawn_food
+  starter_food <- spawn_food starter
   putStrLn "\n\nMove snake with WASD \n"
-  draw starter food
+  draw starter starter_food
   let starter_dir = D
-  mainloop starter food starter_dir
+  mainloop starter starter_food starter_dir
   where mainloop snake food dir = do
           input <- timeout 1000000 getWASD
           let next_dir = case input of
                 Just c -> c
                 Nothing -> dir
-          let new = new_snake snake food (wasd_to_dir next_dir)
+          let (new, mfood) = new_snake snake food (wasd_to_dir next_dir)
           cursorUp (y_max + 1)
           setCursorColumn 0
           draw new food
-          mainloop new food next_dir
+          new_food <- case mfood of
+            Nothing -> spawn_food new
+            (Just food) ->return food
+          mainloop new new_food next_dir
 
 getWASD :: IO WASD
 getWASD = do
