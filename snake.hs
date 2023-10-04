@@ -13,13 +13,23 @@ data WASD = W | A | S | D
 
 data Food = Food (Int,Int)
 
-new_snake :: Snake -> Food -> (Int,Int) -> (Snake, Maybe Food)
-new_snake (Snake []) _ dir = (Snake [(0,0)], Nothing)
-new_snake (Snake snake) (Food food) dir | snake_bite new_head snake = (Snake [], Nothing) 
+data Game = Game Snake Food WASD
+
+game_start :: IO Game
+game_start = do
+   let starter_snake = Snake [(5,0),(4,0),(3,0),(2,0)]
+   starter_food <- spawn_food starter_snake
+   let starter_key = D
+   return $ Game starter_snake starter_food starter_key
+
+new_snake :: Game -> (Snake,Maybe Food)
+new_snake (Game (Snake []) (Food food) key) = (Snake [(0,0)], Just $ Food food)
+new_snake (Game (Snake snake) (Food food) key) | snake_bite new_head snake = (Snake [], Nothing) 
                                         | bonk new_head             = (Snake [], Nothing)
-                                        | food_eaten new_head food  = (Snake (new_head : snake), Nothing)
-                                        | otherwise                 = (Snake (new_head : init snake), Just $ Food food)
+                                        | food_eaten new_head food  = ((Snake (new_head : snake)), Nothing)
+                                        | otherwise                 = ((Snake (new_head : init snake)), (Just $ Food food))
                                where old_head = head snake
+                                     dir = wasd_to_dir key
                                      new_head = (fst old_head + fst dir, snd old_head + snd dir)
                                      snake_bite h t = h `elem` t
                                      food_eaten h f = h == f
@@ -57,33 +67,31 @@ wasd_to_dir s = case s of
 --   snake_crawls new ds
 -- snake_crawls snake [] = return snake
 
-
-bools_to_pixel :: (Bool,Bool) -> Char
-bools_to_pixel b = case b of
-          (True , _) -> '#'
-          (False , True) -> 'O'
-          (False, False) -> '.'
-
 drawline :: Snake -> Food -> Int -> String
-drawline (Snake snake) (Food food) y =  map  (\ x -> bools_to_pixel $ ( ( (x,y) `elem` snake) , ((x,y) == food) )) [0..x_max]
+drawline (Snake snake) (Food food) y =  map  (\ x -> generate_pixel(x,y)) [0..x_max]
+  where generate_pixel (x,y) | not (null snake) && (x,y) == head snake = '#'
+                             | (x,y) `elem` snake = '+'
+                             | (x,y) == food = 'O'
+                             | otherwise = '.'
 
 draw :: Snake -> Food -> IO [()] --[String]
 draw snake food = traverse putStrLn $ map (\ y -> drawline snake food y) [y_max, y_max-1..0]
 
 main = do
   hSetBuffering stdin NoBuffering
-  let starter = Snake [(5,0),(4,0),(3,0),(2,0)]
-  starter_food <- spawn_food starter
+  Game starter_snake starter_food starter_dir <- game_start
+  --let starter = Snake [(5,0),(4,0),(3,0),(2,0)]
+  --starter_food <- spawn_food starter
   putStrLn "\n\nMove snake with WASD \n"
-  draw starter starter_food
-  let starter_dir = D
-  mainloop starter starter_food starter_dir
+  draw starter_snake starter_food
+  --let starter_dir = D
+  mainloop starter_snake starter_food starter_dir
   where mainloop snake food dir = do
           input <- timeout 1000000 getWASD
           let next_dir = case input of
                 Just c -> c
                 Nothing -> dir
-          let (new, mfood) = new_snake snake food (wasd_to_dir next_dir)
+          let (new, mfood) = new_snake (Game snake food  next_dir)
           cursorUp (y_max + 1)
           setCursorColumn 0
           draw new food
