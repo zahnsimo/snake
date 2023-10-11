@@ -5,8 +5,8 @@ import System.Timeout
 import System.Console.ANSI
 import System.Random
 import Control.Monad.Reader
-import Control.Monad.State.Class
-import Text.Read
+import Control.Monad.State.Strict
+import Text.Read hiding (get)
 
 
 data Settings = Settings{
@@ -23,7 +23,6 @@ data Settings = Settings{
 -- (2,2)        projective plane
 
 data Snake = Snake [(Int,Int)]
-  deriving Show
 
 data Food = Food (Maybe (Int,Int))
 
@@ -36,6 +35,7 @@ data Game = Game{
                 }
 
 data Score = Score Int
+  deriving Show
 
 --------------------movement of the snake------------------------------
 
@@ -46,22 +46,25 @@ wasd_to_dir s = case s of
   S -> (0,-1)
   D -> (1,0)   
 
-move_Snake :: (Monad m, MonadReader Settings m) => Game -> m (Maybe Game)
+move_Snake :: (Monad m, MonadReader Settings m, MonadState Score m)
+  => Game -> m (Maybe Game)
 move_Snake (Game (Snake []) (Food food) key) = return Nothing
-move_Snake (Game (Snake snake) (Food Nothing) key) = return Nothing
-move_Snake (Game (Snake snake) (Food (Just food)) key) = do
+--move_Snake (Game (Snake snake) (Food Nothing) key) = return Nothing
+move_Snake (Game (Snake snake) (Food food) key) = do
   settings <- ask
   let old_head = head snake
   let dir = wasd_to_dir key
   new_head <- new_head_position old_head dir
   let snake_bite h t = h `elem` t
-  let food_eaten h f = h == f
+  let food_eaten h f = Just h == f
   if| runReader (out_of_bounds new_head) settings -> return Nothing
     | snake_bite new_head snake -> return Nothing                                       
-    | food_eaten new_head food  -> return $ Just $ Game (Snake (new_head : snake)) (Food Nothing) key
-    | otherwise                 -> return $ Just $ Game (Snake (new_head : init snake)) (Food $ Just food) key
+    | food_eaten new_head food  -> do modify (\ (Score x) -> Score (x+1))
+                                      return $ Just $ Game (Snake (new_head : snake)) (Food Nothing) key
+    | otherwise                 -> return $ Just $ Game (Snake (new_head : init snake)) (Food food) key
 
-new_head_position :: (Monad m, MonadReader Settings m) => (Int,Int) -> (Int,Int) -> m (Int,Int)
+new_head_position :: (Monad m, MonadReader Settings m)
+  => (Int,Int) -> (Int,Int) -> m (Int,Int)
 new_head_position old_head dir = do
   let new_head_shadow = (fst old_head + fst dir, snd old_head + snd dir)
   settings <- ask
@@ -72,7 +75,8 @@ new_head_position old_head dir = do
                | otherwise            = new_head_shadow
   return new_head
 
-wrap_around :: (Monad m, MonadReader Settings m) => (Int,Int) -> m (Int,Int)
+wrap_around :: (Monad m, MonadReader Settings m)
+  => (Int,Int) -> m (Int,Int)
 wrap_around (x,y) = do
   Settings x_max y_max mode <- ask
   let (x_wrapped, y_wrapped) | x `mod` (x_max + 1) == 0
@@ -81,7 +85,8 @@ wrap_around (x,y) = do
         = (x * snd mode `mod` (x_max + 1), abs (y_max - y) `mod` (y_max + 1))
   return (x_wrapped, y_wrapped)
 
-out_of_bounds :: (Monad m, MonadReader Settings m) => (Int,Int) -> m Bool
+out_of_bounds :: (Monad m, MonadReader Settings m)
+  => (Int,Int) -> m Bool
 out_of_bounds (x,y) = do
   x_max <- asks prx_max
   y_max <- asks pry_max
@@ -114,12 +119,16 @@ draw game = do
 
 -----------------settings for the game----------------
 
-game_start :: (Monad m, MonadReader Settings m, MonadIO m) => m Game
+game_start :: (Monad m, MonadReader Settings m, MonadState Score m, MonadIO m) => m Game
 game_start = do
+   put $ Score 0
    let starter_snake = Snake [(5,1),(4,1),(3,1),(2,1)]
    starter_food <- spawn_food starter_snake
    let starter_key = D
    return $ Game starter_snake starter_food starter_key
+
+standart_settings :: Settings
+standart_settings = Settings 20 10 (1,1)
 
 getInt :: IO Int
 getInt = do
@@ -169,14 +178,16 @@ spawn_food (Snake snake) = do
   else  
     return (Food $ Just (x,y))
 
-update_Food :: (Monad m, MonadReader Settings m, MonadIO m) => Game -> m Game
+update_Food :: (Monad m, MonadReader Settings m, MonadIO m)
+  => Game -> m Game
 update_Food (Game snake food key) = do
   new_food <- case food of
    Food Nothing -> spawn_food snake
    Food (Just food) -> return (Food $ Just food)
   return (Game snake new_food key)
 
-check_for_gameover :: (Monad m, MonadReader Settings m, MonadIO m) => (Maybe Game) -> m Game
+check_for_gameover :: (Monad m, MonadReader Settings m, MonadState Score m, MonadIO m)
+  => (Maybe Game) -> m Game
 check_for_gameover (Just game) = return game
 check_for_gameover Nothing = game_start
 
@@ -192,24 +203,51 @@ getWASD = do
    'd' -> return D
    _ -> getWASD
 
-mainloop :: (Monad m, MonadReader Settings m, MonadIO m) => Game -> m Game
-mainloop game = do
+-- mainloop :: (Monad m, MonadReader Settings m, MonadState Score m, MonadIO m)
+--   => Game -> m ()
+-- mainloop game = do
+--   settings <- ask
+--   (Score score) <- get
+--   let y_max = pry_max settings
+--   liftIO $ putStrLn $ "Score " ++ show score
+--   draw game
+--   liftIO $ cursorUpLine (y_max + 3)
+--   input <- liftIO $ timeout 1000000 getWASD
+--   next_game <- update_Food =<< check_for_gameover =<< move_Snake (update_Key game input)
+--   mainloop next_game
+
+mainloop :: (Monad m, MonadReader Settings m, MonadState Score m, MonadIO m)
+  => m ()
+mainloop = do
+  settings <- ask
+  Score final_score <- snd <$> runStateT (runReaderT (game_start >>= gameloop) settings) (Score 0)
+  liftIO clearFromCursorToScreenEnd
+  liftIO $ putStrLn $ "Final Score " ++ show final_score
+  liftIO $ putStrLn "Play Again? (y or n)"
+  key <- liftIO $ getChar
+  case key of 'y' -> mainloop
+              _ -> return ()
+
+gameloop :: (Monad m, MonadReader Settings m, MonadState Score m, MonadIO m)
+  => Game -> m ()
+gameloop game = do
   settings <- ask
   let y_max = pry_max settings
+  (Score score) <- get
+  liftIO $ putStrLn $ "Score " ++ show score
   draw game
-  liftIO $ cursorUp (y_max + 2)
-  liftIO $ setCursorColumn 0
+  liftIO $ cursorUpLine (y_max + 3)
   input <- liftIO $ timeout 1000000 getWASD
---  next_game <- (check_for_gameover =<< move_Snake $ update_Key game input) >>= update_Food
-  let test_game = runReader (move_Snake $ update_Key game input) settings
-  next_game <- (check_for_gameover $ runReader (move_Snake $ update_Key game input) settings) >>= update_Food
-  mainloop next_game
-
+  maybe_next_game <- move_Snake =<< update_Food (update_Key game input)
+  case maybe_next_game of Just next_game -> gameloop next_game
+                          Nothing        -> return ()
 
 main = do
   hSetBuffering stdin NoBuffering
-  --let settings = (Settings 20 10 (0,-1) )
-  settings <- getSettings
-  start <- runReaderT game_start settings
-  putStrLn "\n\nMove snake with WASD \n"
-  runReaderT (mainloop start) settings
+  clearFromCursorToScreenEnd
+  putStrLn "Play with standart settings? (y or n)"
+  key <- getChar
+  settings <- case key of 'y' -> return standart_settings
+                          _   -> getSettings
+  putStrLn "\nMove snake with WASD \n"
+  runStateT (runReaderT mainloop settings) (Score 0)
